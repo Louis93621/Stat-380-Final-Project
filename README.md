@@ -1,2 +1,2 @@
-# Stat-184-Final-Project
+# Stat-380-Final-Project
 Credit Card Default Prediction
