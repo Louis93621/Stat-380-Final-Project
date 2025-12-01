@@ -24,8 +24,8 @@ We implemented and compared the following models:
 6.  **Neural Network**
 
 ## Key Findings
-**Best Performers**: **Random Forest** and **XGBoost** achieved the best balance of accuracy (~82%) and recall, effectively identifying potential defaulters[cite: 395, 413].
-**Critical Factor**: Recent payment status (PAY_0) was consistently identified as the strongest predictor of default across all models.
+* **Best Performers**: **Random Forest** and **XGBoost** achieved the best balance of accuracy (~82%) and recall, effectively identifying potential defaulters.
+* **Critical Factor**: Recent payment status (PAY_0) was consistently identified as the strongest predictor of default across all models.
 
 ## Files
 * `final_project.qmd`: The Quarto source file containing R code and analysis.
