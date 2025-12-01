@@ -1,0 +1,1461 @@
+---
+title: "Credit Card Approval Prediction"
+author: Ya-Nuo Hsu, Ziyue Han, and Ruiyan Tang
+date: "May 5, 2025"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: true
+    keep_tex: true
+mainfont: "Times New Roman"
+fontsize: 11pt
+geometry: margin=1in
+---
+
+## 1 Introduction
+
+Predicting credit card defaults is crucial for financial institutions aiming to effectively manage risk and maintain the health of their lending portfolios. According to Yeh and Lien (2009), defaults result not only in direct financial losses but also diminish lender confidence, ultimately increasing the bank’s cost of capital. In an era marked by rising consumer debt and economic instability, developing accurate early-warning systems to identify potential defaults is increasingly important. Such predictive systems can help banks proactively manage risk—by adjusting credit limits, offering financial counseling, or implementing targeted interventions—thus protecting both customers and institutional stability.
+
+This study leverages the widely-used "Default of Credit Card Clients" dataset from Yeh and Lien (2009), available from the UCI Machine Learning Repository. The dataset includes 30,000 observations of Taiwanese credit card holders. Each entry contains 24 predictive variables and a binary indicator of default status (Yes = 1, No = 0) for the subsequent month. Variables include demographic details (such as age, gender, education, and marital status), credit limits, six months of historical billing amounts, repayment statuses, and payment records. This rich combination of demographic and historical financial data provides a strong foundation for employing predictive modeling approaches.
+
+The project's goal is to develop and evaluate several predictive models to accurately estimate the likelihood of credit card default. Machine learning is particularly suited for this task due to its ability to handle complex, nonlinear relationships, learn from large volumes of historical data, and dynamically adapt to various predictors. We begin by thoroughly cleaning and exploring the dataset to identify meaningful patterns. A basic logistic regression model establishes a baseline for performance. Subsequently, we experiment with more advanced approaches, including regularized regression, decision trees, ensemble methods (Random Forest and XGBoost), support vector machines, and a neural network model. Each model is rigorously evaluated using cross-validation and performance testing on a separate hold-out dataset. Evaluation criteria include metrics such as accuracy, AUC, precision, and recall, ensuring a comprehensive assessment of predictive performance. By identifying the most effective model and understanding the key factors influencing default risk, this study provides valuable insights that banks can use to improve their credit risk management strategies in practice.
+
+## 2 Data Description and Preprocessing
+
+The Default of Credit Card Clients dataset has 30,000 records. It includes 24 predictors and 1 response variable. The response shows if the client failed to pay their credit card bill the next month. The predictor variables fall into several groups:
+
+```{r setup, include=FALSE}
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+library(broom) 
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(caret)
+library(pROC)       # for ROC curves
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(e1071)
+library(nnet)
+library(glmnet)
+library(corrplot)
+library(ggcorrplot)
+library(patchwork)
+library(cowplot)
+
+raw_df <- read_csv("~/Desktop/Stat 380/UCI_Credit_Card.csv")
+
+df <- raw_df %>%
+  rename(default_raw = `default.payment.next.month`) %>%
+  mutate(
+    EDUCATION = ifelse(EDUCATION %in% c(0,5,6), 4, EDUCATION),
+    MARRIAGE  = ifelse(MARRIAGE == 0, 3, MARRIAGE),
+    SEX       = factor(SEX, levels=c(1,2), labels=c("Male","Female")),
+    EDUCATION = factor(EDUCATION,
+                       levels=c(1,2,3,4),
+                       labels=c("Graduate School","University","High School","Others")),
+    MARRIAGE  = factor(MARRIAGE,
+                       levels=c(1,2,3),
+                       labels=c("Married","Single","Others")),
+    default   = factor(default_raw,
+                       levels=c(0,1),
+                       labels=c("No","Yes"))
+  ) %>%
+  dplyr::select(-ID, -default_raw)   # <— explicitly from dplyr
+```
+
+```{r Table 1, echo=FALSE}
+# Table 1: Variable descriptions
+var_desc <- tribble(
+  ~Variable,      ~Type,          ~Description,
+  "Limit_BAL",    "Numeric",      "Amount of given credit (NT dollar)",
+  "SEX",          "Factor",       "Gender (Male, Female)",
+  "EDUCATION",    "Factor",       "Education level (Graduate School, University, High School, Others)",
+  "MARRIAGE",     "Factor",       "Marital status (Married, Single, Others)",
+  "AGE",          "Numeric",      "Age in years",
+  "PAY_0 … PAY_6","Ordinal",      "Repayment status Sept 2005 to Apr 2005 (−1=on time; 1=1 month delay; … 9=≥9 months delay)",
+  "BILL_AMT1–6",  "Numeric",      "Bill statement amount (NT dollar) Sept 2005 to Apr 2005",
+  "PAY_AMT1–6",   "Numeric",      "Previous payment amount (NT dollar) Sept 2005 to Apr 2005",
+  "default",      "Factor",       "Default next month (Yes, No)"
+)
+
+knitr::kable(
+  var_desc,
+  caption = "Table 1\nVariable descriptions for the Default of Credit Card Clients dataset",
+  booktabs = TRUE,
+  align = c("l","l","l")
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size     = 7
+  )
+```
+
+```{r table-2, echo=FALSE}
+# Table 2: Cleaned data overview
+overview <- df %>%
+  summarise(
+    N = n(),
+    Male      = sum(SEX=="Male"),
+    Female    = sum(SEX=="Female"),
+    `Mean age` = mean(AGE),
+    `Median Limit_BAL` = median(LIMIT_BAL),
+    `Mean Limit_BAL`   = mean(LIMIT_BAL),
+    `Default Count`    = sum(default=="Yes"),
+    `Default Rate (%)` = round(100 * mean(default=="Yes"), 1)
+  ) %>%
+  pivot_longer(everything(), names_to="Statistic", values_to="Value")
+
+knitr::kable(
+  overview,
+  caption = "Table 2\nSummary statistics of the cleaned dataset (N = 30,000)",
+  booktabs = TRUE,
+  align = c("l","r")
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size     = 7
+  )
+```
+
+Table 2 provides a brief overview of the cleaned dataset:
+
+-   Demographics: 11,888 males (39.6%) and 18,112 females (60.4%); average age \~35.5 years (range 21–79). Most clients have a university or graduate-level education (\~82% combined), while \~17% have high school or lower.
+-   About 45.5% are single and 54.5% married, with a small fraction in “others” category.
+-   Credit Limits: Mean credit limit is NT\$167,484 (median NT\$140,000), ranging from NT\$10,000 to NT\$1,000,000, indicating a wide variance in customer credit lines.
+-   Payment History: The repayment status variables (PAY_0 to PAY_6) show that most values are 0 or -1 (meaning timely payments or paid in full), but there are also many instances of 1, 2, ... up to 8. For the most recent month (PAY_0), the distribution has a large spike at 0/-1 and a long tail of positive delays; a small number of accounts even have status 8 or 9.
+-   Bill and Payment Amounts: Bill amounts vary widely; for instance, the median bill in September 2005 (BILL_AMT1) is around NT\$22,000, but the maximum is over NT\$1,000,000. Payment amounts also vary, often being 0 for some months and ranging up to the tens or hundreds of thousands.
+
+Before starting the analysis, we looked for any unusual or missing values in the data. A few records had impossible values, so we changed them to "Others" or marked them as missing. We also scaled some continuous variables when needed for models that care about the size of numbers. In the end, we kept all 30,000 records and all features. The cleaned dataset was ready for analysis and modeling.
+
+## 3 Exploratory Data Analysis
+
+We started by exploring the data to see how the variables are spread out and how they might relate to default. Here are some main facts about the customers. Out of 30,000 clients, 22.1% missed their payment the next month. This means the data is imbalanced, with fewer defaults. The average age is about 35.5 years, with ages ranging from 21 to 79. Around 60% of the customers are women, and 40% are men. Most people went to college or graduate school, while the rest finished high school or less. About 54.5% are married, and 45.5% are single. Only a small number belong to other marital groups. The average credit limit is 167,484 NTD, and the median is 140,000 NTD. Credit limits range from 10,000 to 1,000,000 NTD, showing that customers differ a lot in how much credit they have.
+```{r eda-tables, echo=FALSE, message=FALSE}
+# Table 3: Default rate by demographic factor
+eda_cat <- bind_rows(
+  df %>%
+    group_by(SEX) %>%
+    summarise(Count = n(),
+              `Default Rate (%)` = round(mean(default=="Yes")*100,1)) %>%
+    mutate(Factor = "Gender", Level = SEX) %>%
+    select(Factor, Level, Count, `Default Rate (%)`),
+  
+  df %>%
+    group_by(EDUCATION) %>%
+    summarise(Count = n(),
+              `Default Rate (%)` = round(mean(default=="Yes")*100,1)) %>%
+    mutate(Factor = "Education", Level = EDUCATION) %>%
+    select(Factor, Level, Count, `Default Rate (%)`),
+  
+  df %>%
+    group_by(MARRIAGE) %>%
+    summarise(Count = n(),
+              `Default Rate (%)` = round(mean(default=="Yes")*100,1)) %>%
+    mutate(Factor = "Marital Status", Level = MARRIAGE) %>%
+    select(Factor, Level, Count, `Default Rate (%)`)
+)
+
+kable(
+  eda_cat,
+  caption = "Table 3\nDefault rate by demographic factor",
+  booktabs = TRUE,
+  align = c("l","l","r","r")
+)
+
+# Table 4: Mean age and limit by default status
+eda_num <- df %>%
+  group_by(default) %>%
+  summarise(
+    `Mean Age`        = round(mean(AGE),1),
+    `Mean Limit_BAL`  = round(mean(LIMIT_BAL),0),
+    .groups = "drop"
+  ) %>%
+  rename(`Default Status` = default)
+
+kable(
+  eda_num,
+  caption = "Table 4\nMean age and credit limit by default status",
+  booktabs = TRUE,
+  align = c("l","r","r")
+)
+```
+
+```{r, echo=FALSE}
+pay0_stats <- df %>%
+  group_by(PAY_0) %>%
+  summarize(default_rate = mean(default == "Yes"), .groups="drop")
+```
+
+Some key observations from the EDA include:
+
+-   Demographic Factors: 
+
+Table 3 shows that default rates vary little across demographic groups. Men defaulted at 24.2%, and women at 20.8%, suggesting gender has little impact. Education showed a slight trend: graduate degree holders had the lowest default rate (19.2%), university graduates were at 23.7%, and high school graduates had the highest rate (25.2%). This may suggest that higher education is linked to better credit management. The “Other/Unknown” education group had a low rate of 7.1%, but the sample was small. Marital status also made little difference, with default rates of 23.5% for married clients, 20.9% for singles, and 23.6% for others. Overall, demographic factors had only a weak relationship with default risk.
+
+-   Credit Limit and Age: 
+
+Table 4 compares age and credit limits between defaulters and non-defaulters. The average age was nearly the same—35.7 for defaulters and 35.4 for non-defaulters. This shows that age is not a useful predictor. Credit limit, however, showed a clear difference. Non-defaulters had a higher average limit of NTD 178,100, while defaulters had a lower average of NTD 130,110. This suggests that people with lower limits were more likely to default. It also implies the bank gave smaller limits to higher-risk clients. Overall, a higher credit limit—possibly reflecting better credit history—was linked to a lower chance of default.
+```{r side_by_side_patchwork, fig.width=14, fig.height=6, echo=FALSE}
+num_vars <- df %>%
+  dplyr::select(
+    LIMIT_BAL, 
+    AGE, 
+    dplyr::starts_with("BILL_AMT"), 
+    dplyr::starts_with("PAY_AMT")
+  )
+corr_mat <- cor(num_vars, use = "pairwise.complete.obs")
+p1 <- ggcorrplot(
+  corr_mat,
+  hc.order    = TRUE,
+  type        = "lower",
+  lab         = TRUE,
+  lab_size    = 2,
+  title       = "Figure 1: Correlation Heatmap of Financial Features"
+) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 <- df %>%
+  group_by(PAY_0) %>%
+  summarize(default_rate = mean(default == "Yes") * 100, n = n()) %>%
+  ggplot(aes(x = factor(PAY_0), y = default_rate)) +
+    geom_col(fill = "#feb24c") +
+    geom_text(aes(label = sprintf("%.1f%%", default_rate)), vjust = -0.5) +
+    labs(
+      title = "Figure 2: Default Rate vs. Most Recent Payment Status (PAY_0)",
+      x     = "PAY_0 (−1 = on time; 1 = 1 month delay; …)",
+      y     = "Default Rate (%)"
+    ) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p1 + p2 + 
+  plot_layout(ncol = 2, widths = c(1, 1)) &
+  theme(
+    plot.margin = ggplot2::margin(t = 10, r = 10, b = 10, l = 10, unit = "pt")
+  )
+
+```
+-   Payment History and Default: 
+The strongest pattern was between recent payment history and default. As PAY_0 increased, default risk rose sharply. Clients who paid on time or had no balance had low default rates, around 12% to 17%. A one-month delay raised the rate to 33.9%. Two months late pushed it to 69%. Three or more months late led to rates above 75%. For example, PAY_0 = 3 had a 75.8% default rate, and PAY_0 = 7 reached 77.8%. This shows that recent late payments are the clearest warning sign. Similar trends appeared in PAY_2 through PAY_6. Even older missed payments still increased risk. Overall, recent payment behavior was the most important predictor of default in the dataset.
+```{r bill-pay-table, include=FALSE}
+
+# compute bill/pay summary and correlation values
+bill_cols       <- grep("^BILL_AMT[1-6]$", names(df), value=TRUE)
+pay_cols        <- grep("^PAY_AMT[1-6]$",  names(df), value=TRUE)
+bill_corr_vals  <- cor(df[bill_cols], use="complete.obs")[lower.tri(diag(6))]
+pay_corr_vals   <- cor(df[pay_cols],  use="complete.obs")[lower.tri(diag(6))]
+
+bill_range <- round(range(bill_corr_vals), 2)
+pay_mean   <- round(mean(pay_corr_vals), 2)
+
+# Print correlation summary
+cat("Bill‐statement correlations: r =", bill_range[1], "to", bill_range[2], "\n")
+cat("Mean payment‐amount correlation: r =", pay_mean, "\n")
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+ggplot(df, aes(x = BILL_AMT1, y = PAY_AMT1, color = default)) +
+  geom_point(alpha = 0.4) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 3: Payment vs. Bill Amount (Month 1)",
+       x = "BILL_AMT1 (NTD)",
+       y = "PAY_AMT1 (NTD)",
+       color = "Default") +
+  theme_minimal()
+```
+```{r corr-summary-table, echo=FALSE}
+library(tibble)
+library(knitr)
+
+# build a tiny summary tibble
+corr_summary <- tibble(
+  Feature = c("Bill-statement correlations", "Mean payment-amount correlation"),
+  Correlation = c("0.80 – 0.95", "0.19")
+)
+
+corr_summary %>%
+  kable(
+    caption = "Table 5\nSummary of Key Correlations",
+    col.names = c("Feature", "Pearson r"),
+    align = c("l","c")
+  )
+```
+- Bill and Payment Amount Patterns: 
+
+We also examined how the financial variables relate to each other. The six bill amounts (BILL_AMT1 to BILL_AMT6) were strongly correlated, with values between 0.80 and 0.95. This is expected—customers with high bills in one month often have high bills in later months. In contrast, the six payment amounts (PAY_AMT1 to PAY_AMT6) were weakly related. Their average correlation was only 0.19, showing that payment amounts vary more month to month.
+
+When we compared defaulters and non-defaulters, we saw that defaulters made much smaller payments relative to their bills. Their bill amounts were only slightly lower, but they paid back far less. This suggests that low repayment behavior—rather than high debt—may signal default risk. Table 5 shows that while balances were similar, defaulters paid a much smaller share. Many defaulters kept their debt high by making only minimal payments.
+
+Overall, our data exploration shows that payment behavior is the strongest sign of default risk. Demographic factors and credit limits do matter a little, but they are less important once we look at payment history. These findings will help us build better models. We expect that models using payment history will do a good job predicting who will default.
+
+## 4 Linear Regression Analysis
+
+Before we started predicting defaults, we first used linear regression to explore what affects the credit limit (LIMIT_BAL) a client gets from the bank. This is a regression problem that helps us understand how the bank decides credit limits and what kind of customers get more or less credit. This is useful because credit limits might show how much the bank trusts a client—and that could also relate to default risk. We built a model with credit limit as the outcome and age, sex, education, and marital status as the predictors. By looking at the model results, we can see which kinds of clients usually get higher or lower credit limits, even after accounting for the other factors. Here is a summary of what we found:
+
+```{R, include=FALSE}
+# Linear regression: predict credit limit from demographics
+lm_model <- lm(LIMIT_BAL ~ AGE + SEX + EDUCATION + MARRIAGE, data = df)
+
+summary(lm_model)
+```
+```{r lm-coefs-table, echo=FALSE}
+coef_tbl <- lm_model %>%
+  broom::tidy() %>%
+  mutate(
+    term = recode(term,
+      `(Intercept)` = "Intercept",
+      AGE           = "Age (years)",
+      SEXFemale     = "Female (vs Male)",
+      EDUCATIONUniversity  = "Univ (vs Grad)",
+      EDUCATIONHighSchool = "High School (vs Grad)",
+      EDUCATIONOthers      = "Others (vs Grad)",
+      MARRIAGESingle       = "Single (vs Married)",
+      MARRIAGEOthers       = "Other Marital Status"
+    ),
+    p.value = signif(p.value, 3),
+    sig = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) %>%
+  select(
+    Term      = term,
+    Estimate  = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    `Pr(>|t|)` = p.value,
+    Sig = sig
+  )
+
+coef_tbl %>%
+  kable(
+    caption = "Table 6\nLinear Regression Coefficients for Credit Limit Model",
+    digits = c(0, 2, 2, 2, 3, 0),
+    align = c("l", "r", "r", "r", "r", "c")
+  )
+```
+Key Results from the Linear Model Predicting Credit Limit
+
+1.  Age
+
+The estimated coefficient for AGE is 2 356.91 (SE = 88.84, t(29992) = 26.53, p \< .001). This means that, holding all else constant, each additional year of age is associated with an average increase of NT\$ 2356.91 in a client’s credit limit. A 95 % confidence interval for this effect is approximately. $$
+2356.91 \pm 1.96 \times 88.84 \approx [2182, 2531] \ \text{NT\$}.
+$$ Although modest, this positive relationship is plausible—older customers often have longer credit histories and potentially higher incomes.
+
+2.  Gender (Sex)
+
+The regression included a variable for Female, with Male as the baseline. The results showed that female clients had, on average, NT$11,300 higher credit limits than similar male clients (coefficient ≈ +11,327, p < 0.001). This was somewhat surprising. It may reflect differences in credit profiles or bank policies. Female clients in this dataset may have had traits the bank favored, even after adjusting for income and other factors.
+
+3.  Education
+
+We used indicator variables for education, with Graduate School as the reference. The model showed that clients with less education had lower credit limits. University graduates had about NT$69,600 less credit than graduates (p < 0.001). High school graduates had about NT$103,900 less (p < 0.001). Those in the “Other” category had about NT$38,900 less (p < 0.001). This suggests the bank gives higher limits to more educated clients, likely due to higher income or more stable jobs.
+
+4.  Marital Status
+
+Using Married as the baseline, the model showed that Single clients had about NT$19,000 lower credit limits on average (p < 0.001). Clients in the “Other” category had about NT$68,900 less than married clients (p < 0.001). This suggests that married individuals tend to receive higher credit limits. This may reflect greater financial stability or dual incomes, while the “Other” group may include less stable situations.
+
+5.  Model Fit
+
+Although the demographic effects were statistically significant, they explained little overall. The model’s $R^2$ was just 0.1156, meaning only 11.6% of the variation in credit limits came from age, gender, education, and marital status. This is expected, since banks likely consider many other factors like income, job status, and credit history. So, while demographics matter somewhat—older, more educated, and married clients tend to get higher limits—they account for only a small part of the bank’s decisions.
+
+
+The regression shows that demographics do affect credit limits, but the impact is small. Older, female, well-educated, and married clients tend to get higher limits. Younger, less-educated, and single clients usually get lower limits. However, these traits explain only a small part of the bank’s decision. Other factors, like income or credit history, likely play a bigger role. Still, this result is useful. If credit limits relate to demographics, these traits might also link to default risk. In the next steps, we’ll test whether age, education, and marital status help predict default, even if they are weaker than payment history.
+
+## 5 Logistic Regression Analysis
+
+The main goal of our project is to predict whether a customer will default next month (a yes/no outcome). For this kind of problem, logistic regression is a good starting point. It is often used in credit scoring because it models the chance of default using the input features. It also helps us understand how each variable affects default risk and gives us a baseline to compare more advanced models.
+
+We used all 24 predictors in the model. We split the data into a training set (80%, or 24,000 cases) and a test set (20%, or 6,000 cases). We trained the model using 10-fold cross-validation on the training data to reduce overfitting. This method also helped us check how well the model performs.
+
+Cross-validation Performance: In cross-validation, the logistic model got an average AUC of about 0.72, which shows it has moderate ability to tell defaulters from non-defaulters. When using a cutoff of 0.5, the model did well at identifying non-defaulters (about 97% correct), but it did poorly at catching defaulters—only 25–30% of them were correctly flagged. In short, the model often said “No Default” even when some people did default.
+
+This problem is common when the dataset is imbalanced, like ours (only 22.1% are defaulters). If a model predicts “No Default” for everyone, it still gets 77.9% accuracy. But that’s not helpful because it misses most real defaulters. So the goal is to do better than this baseline, while not wrongly labeling too many safe customers as risky.
+
+Overall, the cross-validation showed that the logistic model was better than random guessing (AUC ~0.72), but it was cautious in predicting defaults. We will try to improve on this with stronger models or better cutoff values.
+
+```{R, include=FALSE}
+# Split data into training (80%) and testing (20%)
+set.seed(123)
+train_index <- createDataPartition(df$default, p = 0.8, list = FALSE)
+trainData <- df[train_index, ]
+testData  <- df[-train_index, ]
+
+# Train a logistic regression model
+train_control <- trainControl(method = "cv", number = 10, classProbs = TRUE,
+                              summaryFunction = twoClassSummary)  # use ROC for summary
+logit_model <- train(default ~ ., data = trainData, method = "glm", family = "binomial",
+                     trControl = train_control, metric = "ROC")
+# Cross-validated performance:
+print(logit_model)
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+# predict probabilities on test set
+probs <- predict(logit_model, newdata = testData, type = "prob")[, "Yes"]
+roc_obj <- roc(testData$default, probs)
+ggroc(roc_obj) +
+  labs(title = "Figure 4: ROC Curve for Logistic Regression",
+       x = "False Positive Rate (1 – Specificity)",
+       y = "True Positive Rate (Sensitivity)") +
+  annotate("text", x = 0.6, y = 0.2,
+           label = paste0("AUC = ", round(auc(roc_obj), 2))) +
+  theme_minimal()
+```
+
+After training, we applied the logistic model to the hold-out test set of 6,000 clients to evaluate its real performance. The results on the test set were consistent with the cross-validation findings. The model’s confusion matrix on the test data is summarized below:
+
+```{R, include=FALSE}
+# Predict on test data
+logit_probs <- predict(logit_model, newdata = testData, type = "prob")[, "Yes"]
+logit_pred  <- predict(logit_model, newdata = testData)  # predicted classes
+
+# Confusion matrix and performance metrics
+cm <- confusionMatrix(logit_pred, testData$default, positive = "Yes")
+```
+
+```{R, include=FALSE}
+# Convert the caret confusionMatrix table into a data frame
+cm_df <- as.data.frame(cm$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Prediction = Prediction)
+
+cm_df %>%
+  kable(
+    caption = "Confusion Matrix (Counts)",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l", "r", "r")
+  )
+```
+```{R, echo=FALSE}
+cm_counts <- as.data.frame(cm$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Predicted = Prediction)
+
+cm_stats <- tibble(
+  Metric = c(
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision (Pos Pred Value)",
+    "Negative Pred Value"
+  ),
+  Value = c(
+    cm$overall["Accuracy"],
+    cm$byClass["Sensitivity"],
+    cm$byClass["Specificity"],
+    cm$byClass["Pos Pred Value"],
+    cm$byClass["Neg Pred Value"]
+  )
+) %>%
+  mutate(Value = round(Value, 3))
+
+cm_counts %>%
+  kable(
+    caption = "Table 7\nConfusion Matrix Counts",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l", "r", "r")
+  ) %>%
+
+  kable_styling(full_width = FALSE)
+
+cm_stats %>%
+  kable(
+    caption = "Table 8\nDerived Performance Metrics",
+    col.names = c("Metric", "Value"),
+    align = c("l", "r")
+  ) %>%
+  kable_styling(full_width = FALSE)
+```
+From this, we computed:
+
+-   Accuracy was 81.2%. The model correctly predicted 81% of 6,000 test cases. This was better than the null accuracy of 77.9%, which reflects always guessing “No default.” A test (p < 1e-9) confirmed this was significantly better than chance.
+
+-   Sensitivity (Recall) was 24.9%. The model found only 330 of 1,327 actual defaulters. It missed about 75%. This shows the model is cautious and mostly predicts “No default.”
+
+-   Specificity was 97.2%. It correctly identified 4,541 of 4,673 non-defaulters. The model rarely labeled safe customers as risky.
+
+-   Precision was 71.6%. When it predicted default, it was right 72% of the time. It flagged few people, but those flags were usually correct.
+
+-   Negative Predictive Value was 82.0%. Most people labeled “No default” were truly safe.
+
+-   Balanced Accuracy was 61.0%. This average of sensitivity and specificity shows the model performs better on non-defaulters.
+
+The logistic model was good at spotting safe clients, but it missed most defaulters. That’s common with imbalanced data and a default threshold of 0.5. We didn’t adjust this threshold in the baseline model, but doing so could improve recall.
+
+Even with its limits, the model gave useful insights. Its coefficients show which features affect the odds of default.
+
+1.  Payment status (PAY_0–PAY_6): These were the top predictors. For example, if PAY_0 increases by one level (e.g., from on-time to one month late), the odds of default go up about 4 times. More months late means even higher risk. This matches our earlier findings.
+
+2.  Credit limit (Limit_BAL): The coefficient was slightly negative. Customers with higher limits were a bit less likely to default. It suggests banks assign higher limits to more reliable clients.
+
+3.  Bill and payment amounts (BILL_AMT1–6, PAY_AMT1–6): These added little extra value once payment status was included. Their coefficients were small. This is likely due to overlap across months. Whether someone is behind matters more than how much they owe or paid.
+
+4.  Demographics (AGE, SEX, EDUCATION, MARRIAGE): These had minor effects. For example, having a university degree slightly reduced risk. Age, gender, and marital status had very small impacts. These traits help a little, but not as much as payment history.
+
+In summary, the logistic model highlights one key point: recent delinquency is the strongest signal of default. Other features—like credit limit or demographics—matter less. But the model is limited. It’s linear and misses most defaulters. To improve, we need more flexible models that can capture complex patterns.
+
+## 6 Tree-Based Models
+
+Decision trees and their ensemble variants often perform well for classification tasks like default prediction, as they can capture nonlinear interactions among predictors and handle heterogeneous relationships without requiring the input features to be scaled or transformed. We explored both a single decision tree model and two tree ensemble methods: a Random Forest and XGBoost. These methods were trained on the same 80% training set and evaluated on the 20% test set.
+
+### 6.1 Decision Tree
+
+We first trained a single classification tree using the CART algorithm. To avoid overfitting, we pruned the tree based on cross-validation: the complexity parameter was set to cp = 0.002, which resulted in a tree of depth 4. This pruned tree represented a set of simple decision rules for predicting default.
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+tree_model <- rpart(default ~ ., data = trainData, method = "class", control = rpart.control(cp = 0.002))
+rpart.plot(tree_model)
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+tree_pred_class <- predict(tree_model, newdata = testData, type = "class")
+tree_pred_prob  <- predict(tree_model, newdata = testData, type = "prob")[, "Yes"]
+
+cm_tree <- confusionMatrix(tree_pred_class, testData$default, positive = "Yes")
+
+dt_counts <- as.data.frame(cm_tree$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Predicted = Prediction)
+
+# Extract the key performance metrics
+dt_stats <- tibble(
+  Metric = c(
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision (Pos Pred Value)",
+    "Negative Pred Value"
+  ),
+  Value = c(
+    cm_tree$overall["Accuracy"],
+    cm_tree$byClass["Sensitivity"],
+    cm_tree$byClass["Specificity"],
+    cm_tree$byClass["Pos Pred Value"],
+    cm_tree$byClass["Neg Pred Value"]
+  )
+) %>%
+  mutate(Value = round(Value, 3))
+
+dt_counts %>%
+  kable(
+    caption = "Table 9\nDecision Tree: Confusion Matrix Counts",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l", "r", "r")
+  )
+
+dt_stats %>%
+  kable(
+    caption = "Table 10\nDecision Tree: Performance Metrics",
+    col.names = c("Metric", "Value"),
+    align = c("l", "r")
+  )
+
+
+roc_obj <- roc(response = testData$default,
+               predictor = tree_pred_prob,
+               levels = c("No","Yes"))
+
+auc_value <- auc(roc_obj)
+
+plot(roc_obj, 
+     main = "Figure 5: ROC Curve: Decision Tree",
+     col = "black", lwd = 2)
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+legend("bottomright",
+       legend = paste0("AUC = ", round(auc_value, 2)),
+       bty = "n")
+```
+
+The decision tree model had a simple and intuitive structure. Its top split was on PAY_0, the most recent payment status. This matches what we expected based on earlier analysis. The tree’s first question was: Did the customer have a delay last month? If PAY_0 was 0 or -1 (on time or early), the tree followed one path. If PAY_0 was 1 or more (late), it followed another.
+
+The next important splits were on PAY_3, PAY_2, and BILL_AMT1. These variables represent the payment status from two to three months ago, and the amount of the most recent bill. The tree used them to refine its prediction. This confirms again that recent payment behavior and current balance are key factors in default risk—even in a basic model like this one.
+
+A key advantage of a decision tree is that it is easy to interpret. It gives clear, rule-based decisions. For example, one path in our tree led to this rule:
+
+- Rule: If PAY_0 ≥ 2 and PAY_3 < 0, then predict default = Yes.
+- Estimated probability of default: ≈ 0.71.
+
+This rule flags customers who were on time three months ago but are now two months behind. It suggests that a sudden recent delinquency, even after a good history, signals serious risk. This makes sense. A borrower who has just started falling behind may be facing new financial stress. This rule can easily be explained to managers and stakeholders.
+
+Performance of the Decision Tree: On the test set, the pruned decision tree reached about 82.0% accuracy and a ROC AUC of 0.65. It found more defaulters than logistic regression, with a sensitivity of 32%. However, it had lower specificity and a lower AUC than logistic regression (0.65 vs. 0.72). This means it caught more defaulters, but it was worse at ranking risk overall.
+
+This is a typical trade-off. The tree used sharp splits to find some defaulters more clearly. But as a single tree, it may also overfit and fail to generalize to new data.
+
+While its performance was not as strong as the advanced models we explore next, the tree is still valuable. It is transparent and easy to explain. In real-world use—especially where decisions must be interpretable—a decision tree can still be a practical option.
+
+### 6.2 Random Forest
+
+Next, we used a Random Forest model. This is an ensemble method that builds many decision trees on random parts of the training data and combines their results. Random Forests usually give better accuracy and are more stable than a single tree, but they are harder to interpret. We trained the model with 100 trees (ntree = 100) and kept the other settings at their defaults.
+
+```{r, include=FALSE}
+set.seed(2025)
+rf_model <- randomForest(default ~ ., data = trainData, ntree = 100, importance = TRUE)
+print(rf_model)
+```
+
+```{r, include=FALSE}
+rf_pred   <- predict(rf_model,     newdata = testData)
+cm_rf <- confusionMatrix(rf_pred, testData$default, positive="Yes")
+rf_prob   <- predict(rf_model, newdata = testData, type = "prob")[, "Yes"]
+roc_rf <- roc(
+  response  = testData$default,  
+  predictor = rf_prob,  
+  levels    = c("No","Yes")
+)
+auc_value <- auc(roc_rf)
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+rf_counts <- as.data.frame(cm_rf$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Predicted = Prediction)
+
+rf_stats <- tibble(
+  Metric = c(
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision (Pos Pred Value)",
+    "Negative Pred Value"
+  ),
+  Value = c(
+    cm_rf$overall["Accuracy"],
+    cm_rf$byClass["Sensitivity"],
+    cm_rf$byClass["Specificity"],
+    cm_rf$byClass["Pos Pred Value"],
+    cm_rf$byClass["Neg Pred Value"]
+  )
+) %>%
+  mutate(Value = round(Value, 3))
+
+rf_counts %>%
+  kable(
+    caption = "Table 11\nRandom Forest: Confusion Matrix Counts",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l", "r", "r")
+  )
+
+rf_stats %>%
+  kable(
+    caption = "Table 12\nRandom Forest: Performance Metrics",
+    col.names = c("Metric", "Value"),
+    align = c("l", "r")
+  )
+
+plot(roc_rf, 
+     main = "Figure 6: ROC Curve: Random Forest",
+     col  = "black",
+     lwd  = 2)
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+legend("bottomright",
+       legend = sprintf("AUC = %.2f", auc_value),
+       bty    = "n",
+       text.col = "black",
+       cex    = 1.2)
+
+```
+
+The random forest model got an accuracy of 81.7% on the test set, which is close to the accuracy of both the single decision tree and the logistic model. But it did much better at finding defaulters. It correctly identified about 497 out of 1,327 defaulters, giving a recall of about 37.5%. This is much better than the logistic model, which only caught about 25%. So, the random forest found about 13% more defaulters.
+
+The downside was a small increase in false alarms. It marked more non-defaulters as defaulters, so its specificity dropped to about 94.2% (compared to 97% for logistic). This is a normal trade-off when trying to improve recall. The precision—how many predicted defaulters were actually defaulters—was about 65%.
+
+The model’s ROC AUC was 0.76, better than the logistic model’s 0.72 and much better than the single tree’s 0.65. This shows that the random forest ranked risky and safe customers more accurately. It did this by finding patterns that simpler models missed.
+
+In summary, the random forest showed that using many trees together helps catch more defaulters and improves the model’s overall ranking ability (AUC). It still kept high accuracy for non-defaulters, so it gave a better balance for handling this imbalanced dataset than the logistic model.
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+varImpPlot(rf_model,
+           type = 2,         
+           n.var = 15,       
+           main = "Figure 7: Variable Importance (Mean Decrease Gini)")
+```
+
+Besides accuracy, random forests also show which features matter most for predictions. We looked at the importance scores based on Gini impurity. The top feature by far was PAY_0, which matches everything we’ve seen—recent late payments are a strong warning sign. The next most important features were the bill amounts from the last three months: BILL_AMT1, BILL_AMT2, and BILL_AMT3. This shows that high recent balances also raise the risk of default.
+
+Interestingly, AGE also showed up as one of the top features. This means that even after the model uses payment and balance data, it still finds some helpful signal in age. This fits with what we noticed earlier: younger borrowers may be slightly more at risk, though the effect is small. Some other payment status and payment amount features also mattered, but none were as strong as PAY_0 and the recent bill amounts.
+
+Together, these top features reflect two key risks: missing payments and carrying high balances. This confirms what we saw in earlier analysis—if you want to predict default, focus on whether the customer has been paying on time and how much they owe.
+
+### 6.3 XGBoost
+
+We also used Extreme Gradient Boosting (XGBoost), which is a newer and often stronger method for building tree ensembles. Gradient boosting builds trees one at a time, with each new tree trying to fix the mistakes made by the previous ones. XGBoost is a popular version of this method because it includes tools to prevent overfitting and is known for its speed and strong performance. It’s widely used in machine learning competitions.
+
+We trained the XGBoost model in R using the xgboost package and set it up for binary classification with a logistic objective. For tuning, we used part of the training data as a validation set and applied early stopping. We mostly used the default settings and did not spend much time tuning details like learning rate or tree depth due to time limits. So while the model wasn’t fully optimized, it should still perform well.
+
+```{r, include=FALSE}
+library(xgboost)
+# Prepare data matrices for XGBoost
+train_matrix <- xgb.DMatrix(data = data.matrix(trainData %>% select(-default)), 
+                             label = ifelse(trainData$default=="Yes", 1, 0))
+test_matrix  <- xgb.DMatrix(data = data.matrix(testData %>% select(-default)), 
+                             label = ifelse(testData$default=="Yes", 1, 0))
+# Train XGBoost model with 100 rounds
+xgb_model <- xgboost(data = train_matrix, objective = "binary:logistic", nrounds = 100, 
+                     eval_metric = "auc", verbose = FALSE)
+```
+
+```{r, include=FALSE}
+# Predict on test set
+xgb_pred_prob <- predict(xgb_model, test_matrix)
+xgb_pred <- ifelse(xgb_pred_prob > 0.5, "Yes", "No") %>% factor(levels=c("No","Yes"))
+confusionMatrix(xgb_pred, testData$default, positive="Yes")
+```
+
+```{r, include=FALSE}
+cm_xgb <- confusionMatrix(xgb_pred, testData$default, positive = "Yes")
+
+precision <- cm_xgb$byClass["Pos Pred Value"]   
+recall    <- cm_xgb$byClass["Sensitivity"]      
+
+# Compute F1‐score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+print(paste0("F1‐score = ", round(f1_score, 3)))
+
+# Compute AUC using the probability predictions
+roc_xgb   <- roc(response  = testData$default,
+                 predictor = xgb_pred_prob,
+                 levels    = c("No","Yes"))
+auc_xgb   <- auc(roc_xgb)
+print(paste0("AUC = ", round(auc_xgb, 3)))
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+rf_counts <- as.data.frame(cm_xgb$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Predicted = Prediction)
+
+rf_stats <- tibble(
+  Metric = c(
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision (Pos Pred Value)",
+    "Negative Predictive Value"
+  ),
+  Value = c(
+    cm_xgb$overall["Accuracy"],
+    cm_xgb$byClass["Sensitivity"],
+    cm_xgb$byClass["Specificity"],
+    cm_xgb$byClass["Pos Pred Value"],
+    cm_xgb$byClass["Neg Pred Value"]
+  )
+) %>%
+  mutate(Value = round(Value, 3))
+
+rf_counts %>%
+  kable(
+    caption = "Table 13\nXGBoost: Confusion Matrix Counts",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l","r","r")
+  )
+
+rf_stats %>%
+  kable(
+    caption = "Table 14\nXGBoost: Performance Metrics",
+    col.names = c("Metric", "Value"),
+    align = c("l","r")
+  )
+# Plot ROC
+plot(roc_xgb, main = "Figure 8: ROC Curve: XGBoost", col="black", lwd=2)
+abline(a=0, b=1, lty=2, col="gray")
+legend("bottomright",
+       legend = c(paste0("AUC = ", round(auc_xgb, 2))),
+       bty    = "n")
+```
+
+Performance: The XGBoost model performed about the same as the random forest on the test data. It had an accuracy of 81.4%, which is similar to both the forest and logistic models. For finding defaulters, it had a sensitivity of about 36%, close to the random forest’s 37.5%. This means it caught around one-third of the defaulters. The precision was about 64.2%, also close to the forest’s 65%. The F<sub>1</sub>-score for the default class was around 0.46, showing a good balance between precision and recall.
+
+The ROC AUC for XGBoost was about 0.760, nearly the same as the random forest. So, in this case, gradient boosting did not clearly beat the random forest. Both models improved a lot over simpler methods like logistic regression and decision trees, especially in finding defaulters, while still keeping high overall accuracy. The random forest did slightly better in recall (38% vs. 36%), while XGBoost had similar precision and AUC. The differences are small, so both models are effective, and neither one is clearly better without more tuning.
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+feat_names <- colnames(trainData %>% select(-default))
+
+importance_matrix <- xgb.importance(
+  feature_names = feat_names,
+  model         = xgb_model
+)
+
+xgb.plot.importance(importance_matrix[1:10, ], 
+                    rel_to_first = TRUE, 
+                    xlab = "Relative Gain",
+                    main = "Figure 9: XGBoost Variable Importance (Top 10 by Gain)")
+```
+
+To understand the XGBoost model better, we looked at which features it found most important. The results were very similar to what we saw in the random forest. PAY_0 was by far the most important feature. Next came BILL_AMT1 (September bill) and PAY_AMT1 (September payment), both with high importance scores (around 0.16–0.17). Other key features included PAY_AMT3, BILL_AMT6, and PAY_AMT4, which also had good importance scores (about 0.13–0.15). Rounding out the top ten were LIMIT_BAL (credit limit), AGE, PAY_2, and BILL_AMT2, each with scores around 0.12–0.14.
+
+XGBoost’s top features included a mix of payment status, bill amounts, and payment amounts. This suggests it picked up interactions—for example, it may look at how much someone paid compared to what they owed and whether they were late. This was a little different from the random forest, which focused more on balances and status alone. Boosting models like XGBoost can catch these more detailed patterns, which may explain why payment amounts like PAY_AMT1 mattered more here.
+
+Still, PAY_0 was the most important feature in both models. Both XGBoost and random forest agree that recent payment behavior and current debt are the strongest signs of default risk. They just use this information in more flexible and complex ways to improve accuracy.
+
+Comparison: At this point, both Random Forest and XGBoost clearly perform better than the simpler models. Random Forest had a slight edge in recall, while XGBoost was close in recall and slightly better in precision or calibration. Both had an AUC around 0.76. In practice, the choice between them might depend on other factors: Random Forest is easier to train and explain, while XGBoost can be more powerful if fine-tuned and may work better with very large datasets. For our project, we’ll include both in the final model comparison, but it’s clear that these advanced ensemble models greatly improve our ability to predict default.
+
+## 7 Support Vector Machine
+
+As another method, we tested a Support Vector Machine (SVM) with a radial basis function (RBF) kernel. SVMs are strong classifiers that work well with complex, nonlinear patterns. Unlike decision trees, SVMs don’t split features into parts. Instead, they try to draw the best boundary between the two classes by creating the widest possible margin. The RBF kernel helps the model find curved or flexible boundaries in the original feature space. 
+
+We performed a 5-fold cross-validated grid search to tune the SVM’s regularization parameter C (the cost parameter) for the RBF kernel. We tested values C ∈ {0.01, 0.1, 1, 10, 100} and selected the value that gave the highest cross-validated AUC on the training set. The best performing C was 1, which we then used to train the final SVM on the full training set.
+
+```{r, include=FALSE}
+set.seed(123)
+svm_train <- trainData %>% sample_frac(0.5)
+
+# Tune over a few C values
+tune_res <- tune.svm(
+  default ~ .,
+  data    = svm_train,
+  kernel  = "radial",
+  cost    = c(0.01, 0.1, 1, 10, 100),
+  tunecontrol = tune.control(cross = 5)  # 5‐fold CV
+)
+
+best_model <- tune_res$best.model
+print(tune_res$best.parameters)
+```
+
+```{r, echo=FALSE}
+library(e1071)
+svm_model <- svm(default ~ ., data = trainData[1:12000, ], kernel = "radial", cost = 1, probability = TRUE, scale = TRUE)
+svm_pred <- predict(svm_model, testData)
+cm_svm <- confusionMatrix(svm_pred, testData$default, positive = "Yes")
+svm_counts <- as.data.frame(cm_svm$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Predicted = Prediction)
+
+svm_stats <- tibble(
+  Metric = c(
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision (Pos Pred Value)",
+    "Negative Predictive Value"
+  ),
+  Value = c(
+    cm_svm$overall["Accuracy"],
+    cm_svm$byClass["Sensitivity"],
+    cm_svm$byClass["Specificity"],
+    cm_svm$byClass["Pos Pred Value"],
+    cm_svm$byClass["Neg Pred Value"]
+  )
+) %>%
+  mutate(Value = round(Value, 3))
+
+svm_counts %>%
+  kable(
+    caption = "Table 15\n: SVM (RBF): Confusion Matrix Counts",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l", "r", "r")
+  )
+
+svm_stats %>%
+  kable(
+    caption = "Table 16\nSVM (RBF): Performance Metrics",
+    col.names = c("Metric", "Value"),
+    align = c("l", "r")
+  )
+```
+On the test set, the SVM with a radial kernel reached an overall accuracy of about 81.96%, which is nearly the same as the other models. Its ROC AUC was about 0.72, similar to the logistic regression but lower than the tree-based models like Random Forest and XGBoost.
+
+From the confusion matrix, we found the following:
+
+- Sensitivity (Recall) = 0.317 (approximately 31.7% of defaulters caught). The SVM caught about one-third of the defaulters. This is better than logistic regression (which caught only 25%), but not as good as Random Forest, XGBoost, or the neural network (which reached around 36–38%). So, SVM improved over the simple model, but still missed about two-thirds of the defaulters.
+
+- Specificity = 0.962 (about 96.2% of non-defaulters correctly classified). The SVM correctly labeled most non-defaulters, making only a few false alarms (about 3.8%). This is slightly lower than logistic’s 97%, but still quite good.
+
+- Precision = 0.705 (approximately 70.5% of those predicted to default were actual defaulters). Of the customers SVM predicted as defaulters, about 70% actually were. This is close to logistic regression (~72%) and better than the tree models (~65%), meaning SVM’s default warnings are fairly reliable.
+
+Overall, the SVM model found a balance. It caught more defaulters than logistic regression, while still keeping most of its predictions accurate. Its balanced accuracy (average of sensitivity and specificity) was about 0.72—simliar than logistic’s ~0.72, but still not as high as the tree ensemble models (~0.65).
+```{r, include=FALSE}
+svm_prob  <- attr(predict(svm_model, testData, probability = TRUE), 
+                  "probabilities")[, "Yes"]
+roc_svm <- roc(response  = testData$default,
+               predictor = svm_prob,
+               levels    = c("No","Yes"))
+auc_svm <- auc(roc_svm)
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+plot(roc_svm, main = "Figure 10: ROC Curve: SVM", col = "darkgreen", lwd = 2)
+abline(0, 1, lty = 2, col = "gray")
+legend("bottomright",
+       legend = paste0("AUC = ", round(auc_svm, 3)),
+       bty    = "n")
+```
+
+Interpretation: The SVM performed fairly well overall. It offered a good middle ground—better at catching defaulters than the logistic model, but not as strong as the tree-based models. This result makes sense. SVMs can work well in problems with many features, but tree ensembles often do better when the data has a mix of types (like categories and numbers) and complex patterns.
+
+Also, we didn’t spend much time tuning the SVM’s kernel settings, which might have improved its performance.
+
+In practical terms, SVMs are harder to interpret. Unlike trees, they don’t give clear rules or show which features matter most. Since its AUC was close to logistic regression and lower than the tree models, we probably wouldn’t choose SVM as our final model. Still, it was useful to try it—it shows that using nonlinear methods helps, but in this case, tree-based models were a better fit for the data.
+
+## 8 Neural Network
+
+As a final approach, we built a simple neural network for classification. Like SVMs, neural networks can model complex, nonlinear patterns. They work by using layers of connected units to learn flexible decision boundaries, and with enough layers and hidden units, they can model almost any relationship in the data.
+
+In fact, the original study by Yeh & Lien (2009) found that a neural network was the best single model for predicting default among the methods they tested. They used a three-layer backpropagation network. For our project, we created a basic version using the nnet package in R.
+
+Our neural network had the following architecture and settings:
+
+- One hidden layer with 5 neurons.
+- An output layer with a single neuron, producing a probability via the logistic function.
+- We used a weight decay parameter of 0.1 to prevent overfitting, which penalizes large weights.
+- We standardized all input features to mean 0 and variance 1 before training, which helps the network converge and treats all features on equal footing.
+- We trained the network with default settings for the optimization.
+
+This network is quite small, so it’s essentially able to capture some nonlinear combinations of the inputs but is not overly expressive. We chose a small network due to the limited complexity we wanted and also computational simplicity.
+```{r, echo=FALSE}
+numeric_cols <- trainData %>% 
+  select(-default) %>% 
+  select(where(is.numeric)) %>% 
+  names()
+
+maxs <- sapply(trainData[numeric_cols], max)
+mins <- sapply(trainData[numeric_cols], min)
+
+trainNN <- trainData
+testNN  <- testData
+
+trainNN[numeric_cols] <- as.data.frame(
+  scale(trainData[numeric_cols], center = mins, scale = maxs - mins)
+)
+testNN[numeric_cols] <- as.data.frame(
+  scale(testData[numeric_cols], center = mins, scale = maxs - mins)
+)
+
+```
+
+```{r, include=FALSE}
+nn_model <- nnet(default ~ ., data = trainNN,
+                 size = 5, decay = 0.1, maxit = 500, trace = FALSE)
+nn_prob_raw <- predict(nn_model, testNN, type = "raw")
+
+str(nn_prob_raw)
+
+if (is.matrix(nn_prob_raw)) {
+  # case A: named columns, e.g. c("No","Yes")
+  if ("Yes" %in% colnames(nn_prob_raw)) {
+    nn_prob <- nn_prob_raw[, "Yes"]
+  # case B: two‐column unnamed matrix, assume column 2 = "Yes"
+  } else if (ncol(nn_prob_raw) == 2) {
+    nn_prob <- nn_prob_raw[, 2]
+  # case C: single‐column matrix, assume that column = "Yes"
+  } else if (ncol(nn_prob_raw) == 1) {
+    nn_prob <- nn_prob_raw[, 1]
+  } else {
+    stop("Unexpected number of columns in nn_prob_raw")
+  }
+} else {
+  # case D: a plain vector, treat it as the "Yes" probability
+  nn_prob <- as.numeric(nn_prob_raw)
+}
+
+# compute ROC/AUC
+library(pROC)
+roc_nn <- roc(response  = testNN$default,
+              predictor = nn_prob,
+              levels    = c("No","Yes"))
+auc_nn <- auc(roc_nn)
+cat(sprintf("Neural Net AUC = %.3f\n", auc_nn))
+
+# compute F1‐score via confusionMatrix
+library(caret)
+nn_pred <- factor(predict(nn_model, testNN, type="class"),
+                  levels = levels(testNN$default))
+```
+
+```{r, echo=FALSE}
+cm_nn   <- confusionMatrix(nn_pred, testNN$default, positive = "Yes")
+nn_counts <- as.data.frame(cm_nn$table) %>%
+  pivot_wider(
+    names_from  = Reference,
+    values_from = Freq
+  ) %>%
+  rename(Predicted = Prediction)
+
+# Extract the key performance metrics
+nn_stats <- tibble(
+  Metric = c(
+    "Accuracy",
+    "Sensitivity (Recall)",
+    "Specificity",
+    "Precision (Pos Pred Value)",
+    "Negative Predictive Value"
+  ),
+  Value = c(
+    cm_nn$overall["Accuracy"],
+    cm_nn$byClass["Sensitivity"],
+    cm_nn$byClass["Specificity"],
+    cm_nn$byClass["Pos Pred Value"],
+    cm_nn$byClass["Neg Pred Value"]
+  )
+) %>%
+  mutate(Value = round(Value, 3))
+
+# Render both tables
+nn_counts %>%
+  kable(
+    caption = "Table 17\nNeural Network: Confusion Matrix Counts",
+    col.names = c("Predicted \\ Actual", "No", "Yes"),
+    align = c("l", "r", "r")
+  )
+
+nn_stats %>%
+  kable(
+    caption = "Table 18\nNeural Network: Performance Metrics",
+    col.names = c("Metric", "Value"),
+    align = c("l", "r")
+  )
+```
+Performance: Even though the neural network was simple, it performed about the same as the tree ensemble models on the test set. It reached about 81.9% accuracy, just like Random Forest, XGBoost, and SVM (all between 81–82%). Its ROC AUC was about 0.774, which was a little higher than the tree ensembles (~0.76).
+
+The confusion matrix showed:
+- Sensitivity (Recall) ≈ 0.377 (about 37.7%). The network correctly identified about 500 out of 1,327 defaulters, almost the same as Random Forest (37.5%). This is much better than logistic regression (25%) and matches the best models we tried.
+- Specificity ≈ 0.944 (about 94.4% of non-defaulters correctly identified). That means it made slightly more false alarms than logistic or SVM, but it was very similar to Random Forest.
+- Precision ≈ 0.657 (around 65.7% of predicted defaulters were actual defaulters), again in the same range as Random Forest and XGBoost.
+The F<sub>1</sub>-score for defaults was around 0.48, very close to the others (~0.46 for RF/XGB).
+
+In summary, the neural network’s results were almost the same as Random Forest’s. It caught about the same number of defaulters and made a similar number of mistakes. This is interesting because it shows that even a basic neural net can reach the level of more complex tree models on this dataset. One reason might be that our 5-node hidden layer was enough to learn useful patterns—similar to how a tree learns decision rules.
+
+```{r, include=FALSE}
+precision <- cm_nn$byClass["Pos Pred Value"]
+recall    <- cm_nn$byClass["Sensitivity"]
+f1        <- 2 * (precision * recall) / (precision + recall)
+cat(sprintf("Neural Net F1‐score = %.3f\n", f1))
+```
+
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+plot(roc_nn, main = "Figure 11: ROC Curve: Neural Network", col="darkred", lwd=2)
+abline(0, 1, lty=2, col="gray")
+legend("bottomright",
+       legend = paste0("AUC = ", round(auc_nn, 3)),
+       bty    = "n")
+```
+
+With more tuning, the neural network might perform even better. We could try adding more hidden units, using a second hidden layer, testing different activation functions or training methods, or switching to modern deep learning tools like TensorFlow or Keras for more advanced designs. For example, Yeh and Lien (2009) used a three-layer neural network and found it did better than logistic regression and discriminant analysis (though they didn’t compare it to boosting or random forests). Our one-layer network did well, but it wasn’t clearly the best—it matched the top models but didn’t outperform them. A deeper network or an ensemble of networks might improve results further, though it would be more complex and take more time to train.
+
+One strength of neural networks is that, if complex enough, they can learn to act like other models. In our case, even with just 5 neurons, the network seems to have learned patterns similar to what tree models would find. It reached an AUC of 0.77, which was the highest of all the models we trained. This suggests that the neural net may have ranked risky and safe customers more precisely.
+
+However, there are trade-offs. Neural networks are harder to explain—they are “black boxes,” unlike decision trees or logistic models, which provide clear rules and feature importance. That’s a drawback in business settings where interpretability matters. Also, neural networks can overfit if not tuned well, though we used weight decay to help avoid that.
+
+In conclusion, even a simple neural network matched the best tree-based models in terms of prediction. This shows that the patterns in the data are clear enough to be learned by different kinds of models. For our final model comparison, we’ll include the neural network along with Random Forest and XGBoost, while noting that deeper neural nets might do even better with more tuning.
+
+## 9 Variable Selection with LASSO and Ridge
+
+Given the large number of features in our model, we also explored regularized logistic regression as a way to perform automatic feature selection and potentially improve generalization. In particular, we applied LASSO (L1) regularization and Ridge (L2) regularization to the logistic regression model using the glmnet package. Regularization adds a penalty term to the logistic model’s loss function that either constrains the sum of absolute coefficients (LASSO) or the sum of squared coefficients (Ridge), which can shrink less important coefficients towards zero. LASSO, in particular, can force some coefficients to become exactly zero, effectively removing those variables from the model – this is useful for feature selection and simplifying the model. We used 10-fold cross-validation on the training set to choose the optimal regularization strength (the tuning parameter $\lambda$) for both LASSO and ridge. For each type of penalty, glmnet provides a sequence of models for various $\lambda$ values, and we picked the value of $\lambda$ that maximized the cross-validated AUC (or minimized deviance).
+
+```{r, include=FALSE}
+
+# Prepare x/y matrices
+x_train <- model.matrix(default ~ . -1, data = trainData)
+y_train <- ifelse(trainData$default == "Yes", 1, 0)
+
+x_test  <- model.matrix(default ~ . -1, data = testData)
+y_test  <- ifelse(testData$default == "Yes", 1, 0)
+
+# Cross‐validated LASSO (alpha = 1)
+set.seed(2025)
+cv_lasso <- cv.glmnet(
+  x_train, y_train,
+  family    = "binomial",
+  alpha     = 1,
+  nfolds    = 5,
+  type.measure = "auc"
+)
+
+# Optimal λ
+lambda_lasso <- cv_lasso$lambda.min
+cat("LASSO λ_min =", round(lambda_lasso, 5), "\n")
+
+# Extract LASSO coefficients at λ_min
+coef_lasso <- coef(cv_lasso, s = "lambda.min")
+# Turn into a tibble
+lasso_df <- tibble(
+  Feature = rownames(coef_lasso),
+  Coefficient = as.numeric(coef_lasso)
+) %>%
+  filter(Feature != "(Intercept)")
+
+# Count non‐zero
+n_nonzero <- sum(lasso_df$Coefficient != 0)
+cat("Number of non‐zero features (excluding intercept):", n_nonzero, "\n")
+```
+```{r fig.show='hold', out.width='50%', fig.align='center', echo=FALSE}
+cvdf <- tibble(
+  log_lambda = log(cv_lasso$lambda),
+  auc        = cv_lasso$cvm,
+  se         = cv_lasso$cvsd
+)
+
+ggplot(cvdf, aes(x = log_lambda, y = auc)) +
+  geom_line(color = "#2c7fb8") +
+  geom_point(color = "#2c7fb8") +
+  geom_errorbar(aes(ymin = auc - se, ymax = auc + se),
+                width = 0.1, color = "gray50") +
+  geom_vline(xintercept = log(lambda_lasso),
+             linetype = "dashed", color = "#e34a33", linewidth = 0.8) +
+  annotate("text",
+           x = log(lambda_lasso),
+           y = max(cvdf$auc),
+           label = sprintf("λₘᵢₙ = %.2e", lambda_lasso),
+           vjust = -1,
+           color = "#e34a33") +
+  scale_x_continuous(breaks = pretty(cvdf$log_lambda, 8)) +
+  labs(
+    title    = "Figure 12: LASSO 5-Fold CV AUC vs. log(λ)",
+    x        = expression(log(lambda)),
+    y        = "Cross-Validated AUC"
+  ) +
+  theme_minimal(base_size = 12)
+```
+```{r, include=FALSE}
+lasso_df %>%
+  filter(Coefficient != 0) %>%
+  arrange(desc(abs(Coefficient))) %>%
+  print(n = Inf)
+```
+LASSO results: The optimal LASSO model had a relatively small penalty. The LASSO ended up setting 2 of the 27 coefficients to zero. Specifically, it effectively dropped two of the six BILL_AMT features – those corresponding to the 4th and 5th month’s bill balances (i.e., BILL_AMT4 and BILL_AMT5). This makes sense because, as we saw, the bill amounts are highly correlated across months; apparently BILL_AMT4 and BILL_AMT5 were the most redundant given the others. The LASSO kept all other variables, including all six PAY_status variables (PAY_0 through PAY_6 remained in the model), all six payment amount features, the first three and the sixth bill amount, the credit limit, age, sex, education, etc. In other words, LASSO eliminated only those two bill amount features and retained 25 features.
+
+In terms of performance, the LASSO model did just as well as the full logistic model. It had the same AUC (about 0.72) and same accuracy (about 81.2%) on the test set. Recall and precision were also nearly the same (about 25% recall, 72% precision). This means BILL_AMT4 and BILL_AMT5 didn’t add any value to prediction, and removing them made the model simpler without hurting performance.
+
+This is a good outcome—it makes the model easier to understand and possibly more stable by reducing overlap between similar features. It also confirms that the PAY_n variables and recent bill/payment amounts are the most useful, while LASSO helped confirm that two middle-month bills were not needed.
+```{r, include=FALSE}
+cv_ridge <- cv.glmnet(
+  x_train, y_train,
+  family    = "binomial",
+  alpha     = 0,
+  nfolds    = 5,
+  type.measure = "auc"
+)
+lambda_ridge <- cv_ridge$lambda.min
+cat("Ridge λ_min =", round(lambda_ridge, 5), "\n")
+
+coef_ridge <- coef(cv_ridge, s = "lambda.min")
+ridge_df <- tibble(
+  Feature = rownames(coef_ridge),
+  Coefficient = as.numeric(coef_ridge)
+) %>%
+  filter(Feature != "(Intercept)")
+
+# LASSO predictions
+pred_lasso_prob <- predict(cv_lasso, newx = x_test, s = "lambda.min", type = "response")
+roc_lasso       <- roc(y_test, as.vector(pred_lasso_prob))
+auc_lasso       <- auc(roc_lasso)
+
+full_logistic <- glm(default ~ ., data = trainData, family = binomial)
+pred_full     <- predict(full_logistic, newdata = testData, type = "response")
+roc_full      <- roc(y_test, pred_full)
+auc_full      <- auc(roc_full)
+
+cat(sprintf("AUC (LASSO) = %.3f; AUC (full logit) = %.3f\n", auc_lasso, auc_full))
+```
+
+Unlike LASSO, Ridge regression doesn’t remove features—it just shrinks the coefficients, especially for less important ones. In our case, the ridge-penalized logistic model kept all features, but with smaller weights for the less useful variables. Its performance was also about the same as the standard logistic model, with an AUC around 0.72.
+
+Ridge can be helpful when features are highly correlated because it spreads the influence across them more evenly. This can make the model more stable. Since our main goal is prediction—not interpreting exact coefficients—ridge didn’t bring major gains, but it confirmed that multicollinearity wasn’t a big problem.
+
+Conclusion on Regularization:
+LASSO gave us a simpler version of the logistic model by removing two redundant features (BILL_AMT4 and BILL_AMT5) without hurting performance. The LASSO model had the same test accuracy (~81.2%), AUC (~0.72), recall (~25%), and precision (~72%) as the full logistic model. This is exactly what we want from regularization: a model that’s simpler, easier to deploy, and just as effective.
+
+However, even after regularization, the logistic models still performed worse than the ensemble methods, especially in recall. This shows that no linear model—regularized or not—could fully capture the complex patterns that methods like Random Forest or XGBoost could. But LASSO did help clean up redundancy and improved the model’s usability.
+
+
+## 10 Model Comparison
+
+We trained a wide variety of models to predict credit card defaults, including logistic regression, a decision tree, Random Forest, XGBoost, SVM, and a neural network. Now, we compare how each model performed on the test set to see which one worked best. Table 19 below summarizes the key performance metrics for each model on the test set: overall accuracy, ROC AUC, recall (sensitivity) for the default class, and precision (positive predictive value) for the default class.
+
+```{r, include=FALSE}
+# 1) Logistic Regression
+logit_prob <- predict(logit_model, newdata = testData, type = "prob")[, "Yes"]
+logit_pred <- predict(logit_model, newdata = testData)  
+
+# 2) Decision Tree (rpart)
+tree_prob <- predict(tree_model,   newdata = testData, type = "prob")[, "Yes"]
+tree_pred <- predict(tree_model,   newdata = testData, type = "class")
+
+# 3) Random Forest
+rf_prob   <- predict(rf_model,     newdata = testData, type = "prob")[, "Yes"]
+rf_pred   <- predict(rf_model,     newdata = testData)
+
+# 4) XGBoost
+xgb_prob  <- predict(xgb_model,    newdata = test_matrix)      # this is already a numeric vector
+xgb_pred  <- factor(ifelse(xgb_prob > 0.5, "Yes", "No"),
+                    levels = c("No","Yes"))
+
+# 5) SVM
+svm_prob  <- attr(predict(svm_model, newdata = testData, probability=TRUE),
+                  "probabilities")[, "Yes"]
+svm_pred  <- predict(svm_model,     newdata = testData)
+
+# 6) Neural Net
+nn_pred   <- factor(predict(nn_model,    newdata = testNN, type="class"),
+                    levels = levels(testNN$default))
+nn_raw    <- predict(nn_model,            newdata = testNN, type="raw")
+nn_prob   <- if (is.matrix(nn_raw)) nn_raw[,1] else as.numeric(nn_raw)
+
+# 7) LASSO‐Logistic
+lasso_prob <- as.vector(predict(cv_lasso, newx = x_test, s="lambda.min", type="response"))
+lasso_pred <- factor(ifelse(lasso_prob > 0.5, "Yes", "No"),
+                     levels = c("No","Yes"))
+
+
+models <- list(
+  "Logistic Regression" = list(
+     pred_class = logit_pred,
+     pred_prob  = logit_prob
+  ),
+  "Decision Tree (CART)" = list(
+     pred_class = tree_pred,
+     pred_prob  = tree_prob
+  ),
+  "Random Forest" = list(
+     pred_class = rf_pred,
+     pred_prob  = rf_prob
+  ),
+  "XGBoost" = list(
+     pred_class = xgb_pred,
+     pred_prob  = xgb_prob   # no “_prob” vs “_pred_prob” mismatch
+  ),
+  "SVM (RBF Kernel)" = list(
+     pred_class = svm_pred,
+     pred_prob  = svm_prob
+  ),
+  "Neural Network (1 layer)" = list(
+     pred_class = nn_pred,
+     pred_prob  = nn_prob
+  ),
+  "LASSO–Logistic" = list(
+     pred_class = lasso_pred,
+     pred_prob  = lasso_prob
+  )
+)
+
+# Define a helper to compute metrics for one model
+get_metrics <- function(name, pred_class, pred_prob, truth) {
+  cm  <- confusionMatrix(
+           factor(pred_class, levels=levels(truth)),
+           truth,
+           positive = "Yes"
+         )
+  roc_obj <- roc(response = truth,
+                 predictor = pred_prob,
+                 levels    = c("No","Yes"))
+  tibble(
+    Model    = name,
+    Accuracy = cm$overall["Accuracy"],
+    `ROC AUC`= as.numeric(auc(roc_obj)),
+    `Default Recall (Sensitivity)` = cm$byClass["Sensitivity"],
+    `Default Precision (PPV)`      = cm$byClass["Pos Pred Value"]
+  )
+}
+
+# Loop over our models list and bind into one data frame
+performance <- bind_rows(
+  lapply(names(models), function(m) {
+    get_metrics(
+      name       = m,
+      pred_class = models[[m]]$pred_class,
+      pred_prob  = models[[m]]$pred_prob,
+      truth      = testData$default   # or testNN$default for NN
+    )
+  })
+) %>%
+  mutate(
+    Accuracy                        = percent(Accuracy, accuracy = 0.1),
+    `Default Recall (Sensitivity)` = percent(`Default Recall (Sensitivity)`, accuracy = 1),
+    `Default Precision (PPV)`      = percent(`Default Precision (PPV)`, accuracy = 1),
+    `ROC AUC`                      = round(`ROC AUC`, 2)
+  )
+```
+```{r, echo=FALSE}
+kable(
+  performance,
+  caption = "Table 19\nModel comparison on the 20% test set: accuracy, ROC AUC, and default‐class recall & precision.",
+  booktabs = TRUE,
+  align = c("l","c","c","c","c")
+)
+```
+
+We tested a wide range of models for predicting credit card defaults. Table 19 compares their performance side by side on the test set. Here are the key takeaways:
+
+-   Baseline Logistic vs. Others: The logistic regression model had solid overall accuracy at 81.2%. But it struggled to detect defaulters. Its recall was only 25%, meaning it missed most default cases. It mainly predicted “No default,” the majority class. That’s why its precision was relatively high at 72%—it only flagged the most obvious defaulters. The model’s AUC was 0.72, which is fair but leaves room for improvement. Overall, it served as a decent baseline, but not much more.
+
+-   Single Decision Tree: The decision tree (CART) raised recall to 32%, improving over the logistic model. This shows that nonlinear splits helped it catch more defaulters. However, its AUC dropped to 0.65, the lowest among all models. That means it wasn’t good at ranking overall risk. The tree may have overfit some patterns, which hurt its generalization. Precision stayed around 71%, close to the logistic model. In short, the tree caught more defaulters but did a worse job ranking them. A single tree was too simple for this complex problem.
+
+-   Ensemble Trees (Random Forest & XGBoost): Random Forest and XGBoost gave the most balanced performance. Both reached an AUC of about 0.76—the highest, along with the neural net. Random Forest recalled 38% of defaulters, while XGBoost recalled 36%. Precision was around 66% for Random Forest and 64% for XGBoost. Their overall accuracy was also strong, about 81–82%. Between them, Random Forest was slightly better at catching defaulters. XGBoost had slightly fewer false positives. Both models performed far better than logistic regression. They found about 1.5 times more defaulters, with only a small cost in precision. This shows that ensemble trees are excellent for handling imbalanced data.
+
+-   SVM and Neural Network: SVM and the neural network also performed well. SVM reached an AUC of 0.72, with 32% recall and 71% precision—very similar to the decision tree. That’s interesting, since SVM is a very different model type. The neural network had the highest AUC at around 0.77. It achieved 38% recall and 66% precision, almost matching Random Forest. This shows that both nonlinear methods—SVM and neural nets—can work well for this task. The neural network stood out slightly more due to its strong AUC. It caught as many defaulters as Random Forest and ranked them slightly better.
+
+-   LASSO-Regularized Logistic: LASSO gave the same results as standard logistic regression. Accuracy was 81.2%, AUC 0.72, recall 25%, and precision 72%. It removed a few unhelpful features but didn’t boost performance. The result was a simpler model, but still not a strong one. It showed that even the best linear combination of features can’t match nonlinear models like Random Forest, XGBoost, or neural nets.
+
+From these results, Random Forest and XGBoost were the best overall. They had the highest AUC scores and much better recall than simpler models. Random Forest had slightly higher recall, making it a better choice for catching more defaulters. XGBoost had slightly better precision, which helps reduce false alarms. Either would be a strong pick.
+
+Neural networks also performed very well. Our basic neural net matched Random Forest, which is impressive. With more tuning, it could do even better. But since tree models are easier to interpret and tune, Random Forest and XGBoost are likely more practical for most use cases.
+
+The logistic model, while simple and interpretable, missed too many defaulters. It works as a baseline but lacks the power needed for real-world credit risk. The single decision tree was also easy to understand but didn't perform as well as the more advanced models.
+
+## 11 Model Interpretation
+While the complex models performed best, we still want to interpret what drives default risk. Consistently across models, the recent payment-status indicators (PAY_0–PAY_6) were the most important feature. To illustrate, Table 20 below summarizes the direction of influence of key predictors according to logistic coefficients.
+```{r, echo=FALSE}
+table1 <- tibble(
+  Predictor = c(
+    "Repayment status PAY_0–PAY_6",
+    "Credit limit (LIMIT_BAL)",
+    "Education level",
+    "Marital status (Married vs Single)",
+    "Age",
+    "Bill/Pymt amounts (BILL_AMT, PAY_AMT)"
+  ),
+  `Effect on Default Risk` = c(
+    "**Positive** (+): recent late payments greatly increase risk",
+    "**Negative** (–): higher limit slightly lowers risk",
+    "**Negative** (–): higher education associated with lower risk",
+    "**Negative** (–): being married has a minor protective effect",
+    "**Negative** (–): older age slightly reduces risk",
+    "Mixed/Neutral: little net effect once payment status is known"
+  )
+)
+
+kable(
+  table1,
+  caption = "Table 20: Predictor effects on default risk. Positive (+) means higher values increase default risk; negative (–) means higher values decrease risk."
+)
+```
+As the table shows, any indication of recent delinquency (higher PAY values) sharply raises default odds. In contrast, having a higher credit limit, higher education, or being married lowers the predicted risk a bit. These signs are consistent with our analysis above. Overall, recent payment behavior dominates the risk model.
+
+## 12 Illustrative Example
+
+As an example, consider a hypothetical customer with the following profile:
+
+- **Age**: 30  
+- **Gender**: Male  
+- **Education**: University graduate  
+- **Marital status**: Single  
+- **Credit limit**: NT\$50,000  
+- **Repayment status**: On-time payment for months 1–6 (`PAY_2` through `PAY_6` = 0), but 1 month late in the most recent month (`PAY_0` = 1).  
+- **Bill amounts and payment amounts**: Average values.  
+
+```{r, echo=FALSE}
+# 1. Compute mean bill and payment amounts from the training data
+amt_means <- trainData %>%
+  summarize(
+    mean_BILL_AMT1 = mean(BILL_AMT1),
+    mean_BILL_AMT2 = mean(BILL_AMT2),
+    mean_BILL_AMT3 = mean(BILL_AMT3),
+    mean_BILL_AMT4 = mean(BILL_AMT4),
+    mean_BILL_AMT5 = mean(BILL_AMT5),
+    mean_BILL_AMT6 = mean(BILL_AMT6),
+    mean_PAY_AMT1  = mean(PAY_AMT1),
+    mean_PAY_AMT2  = mean(PAY_AMT2),
+    mean_PAY_AMT3  = mean(PAY_AMT3),
+    mean_PAY_AMT4  = mean(PAY_AMT4),
+    mean_PAY_AMT5  = mean(PAY_AMT5),
+    mean_PAY_AMT6  = mean(PAY_AMT6)
+  )
+
+# 2. Create the new-customer tibble
+new_customer <- tibble(
+  AGE       = 30,
+  SEX       = factor("Male",   levels = levels(trainData$SEX)),
+  EDUCATION = factor("University", levels = levels(trainData$EDUCATION)),
+  MARRIAGE  = factor("Single",     levels = levels(trainData$MARRIAGE)),
+  LIMIT_BAL = 50000,
+  PAY_0 = 1,
+  PAY_2 = 0, PAY_3 = 0, PAY_4 = 0, PAY_5 = 0, PAY_6 = 0,
+  BILL_AMT1 = amt_means$mean_BILL_AMT1,
+  BILL_AMT2 = amt_means$mean_BILL_AMT2,
+  BILL_AMT3 = amt_means$mean_BILL_AMT3,
+  BILL_AMT4 = amt_means$mean_BILL_AMT4,
+  BILL_AMT5 = amt_means$mean_BILL_AMT5,
+  BILL_AMT6 = amt_means$mean_BILL_AMT6,
+  PAY_AMT1  = amt_means$mean_PAY_AMT1,
+  PAY_AMT2  = amt_means$mean_PAY_AMT2,
+  PAY_AMT3  = amt_means$mean_PAY_AMT3,
+  PAY_AMT4  = amt_means$mean_PAY_AMT4,
+  PAY_AMT5  = amt_means$mean_PAY_AMT5,
+  PAY_AMT6  = amt_means$mean_PAY_AMT6
+)
+
+# 3. Predict the default probability
+pred_probs <- predict(logit_model,
+                      newdata = new_customer,
+                      type   = "prob")
+
+# Extract probability of default = “Yes”
+pred_prob <- pred_probs[ , "Yes"]
+
+# 4. Decide approval with threshold = 0.5
+decision <- ifelse(pred_prob < 0.5, "Approve", "Reject")
+
+cat("Credit line decision for this customer:", decision, "\n")
+```
+Plugging these into our logistic regression model yields an estimated default probability of about 34.6%. Using a cutoff of 50%, the model would predict no default for this client (because 0.346 < 0.50). In practical terms, the model views this customer as a low-to-moderate risk. Therefore, the recommendation would be to approve the credit line. The low predicted risk reflects that the client has an on-time history except one recent delay and a modest credit limit. If the customer had more or larger late payments, the probability would rise and might trigger a “reject” recommendation.
+
+## Conclusion
+
+In this project, we used several machine learning methods to predict next-month credit card default. We worked with the UCI dataset of Taiwanese credit card clients. The methods included logistic regression, regularized models like LASSO, decision trees, ensemble learners (Random Forest and XGBoost), kernel-based methods, and neural networks. Our goal was to compare these models and find the best one for both prediction and understanding default risk.
+
+Model Performance Summary: Table 19 and the earlier discussion summarize the results. The ensemble tree models performed best. Random Forest had the strongest overall metrics. It reached 81.8% accuracy, 0.76 AUC, 38% recall, and 66% precision on the test set. 
+
+XGBoost and the one-layer neural network gave similar results. Their AUCs were around 0.76–0.77. Their recall was between 36–38%, and precision was about 64–66%.
+
+Simpler models didn’t perform as well. Logistic regression had 81.2% accuracy, 0.72 AUC, and just 25% recall. The pruned decision tree had slightly higher accuracy (82.0%) but a lower AUC (0.65) and 32% recall. These models missed many defaulters. Even though their accuracy was decent, the low recall makes them less useful in practice.
+
+LASSO performed like logistic regression (same accuracy and AUC, same 25% recall), but used fewer features. This means we can simplify the model without losing accuracy, though we won’t gain much either.
+
+Key Drivers of Default Risk: All the advanced models pointed to the same key insight: recent payment behavior is the top predictor of default. Variables like PAY_0 to PAY_6—especially PAY_0—were always ranked most important. If a customer recently missed a payment, their risk of default increased sharply. This pattern showed up in every model. In the logistic model, the odds of default rose steeply for each delay. In the tree-based models and neural net, the same variables drove most of the splits and weights. Bill amounts also mattered, especially the most recent ones (like BILL_AMT1 and BILL_AMT2). High balances meant higher risk. But demographic factors such as age, gender, education, and marriage had little impact. They had small coefficients in logistic regression and low importance in tree models. LASSO confirmed this by shrinking many demographic and bill amount coefficients close to zero. It even dropped BILL_AMT4 and BILL_AMT5 entirely, which suggests those variables added little beyond the others. This supports the idea that behavior, not background, is what truly drives credit risk.
+
+Recommended Model and Use: For a real-world credit system, Random Forest stands out as a strong choice. It offers higher recall than logistic regression, catching more defaulters. This is useful if the goal is early intervention. For example, it found 38% of defaulters, compared to only 25% with logistic regression. That’s about 50% more, which could reduce financial losses if those customers are flagged in time. If avoiding false positives is more important, XGBoost is also a good option. It had slightly better precision and very similar recall. In practice, the two models could work together. For instance, the bank might flag customers only if both models agree, or use XGBoost to recheck Random Forest predictions. Both models are far better than the logistic baseline. They show that nonlinear ensemble methods work best for this dataset.
+
+Limitations and Future Work:
+
+-  Dataset Limitations: The data is from 2005 and limited to one country. Behavior may differ today or in other regions. Any deployed model should be retrained for a new context.
+-  Evaluation Metrics: We used general metrics like accuracy and AUC. But in practice, false positives and false negatives have different costs. A better approach would include cost-sensitive training or custom thresholds.
+-  Limited Tuning: Our model tuning was basic. More advanced methods, such as Bayesian optimization or deeper architectures, might boost performance further.
+-  Feature Set: We only used the provided variables. Banks could add credit scores, economic data, or longer payment histories. Time-series modeling could also help.
+-  One-Shot Evaluation: We evaluated our models once. In practice, models should be monitored and recalibrated over time. We also didn’t analyze profit impact. Future work could measure how better predictions affect revenue and cost.
+-  Interpretability: While ensemble and neural models are harder to interpret, we used variable importance and trends to check their behavior. For real deployment, tools like SHAP or LIME could help explain model decisions.
+
+In sum, we tested seven models and validated their performance on a test set. Random Forest and XGBoost stood out for their ability to detect defaulters. LASSO helped simplify models, and clustering added extra value for customer segmentation.
+
+Together, these tools show how machine learning can support smarter credit risk decisions. With further tuning and the use of additional data, these models could become powerful, real-world systems for managing credit portfolios.
+
+
+\newpage
+
+## References
+
+Yeh, I.-C., & Lien, C.-H. (2009). *Default of credit card clients dataset* \[Data set\]. UCI Machine Learning Repository. 
+https://doi.org/10.24432/C55S3H.
+
+\newpage
+
+## Code Appendix
+
+```{r codeAppend, ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
